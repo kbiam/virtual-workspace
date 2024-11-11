@@ -1,6 +1,7 @@
 import { EventBus } from "../EventBus";
 import { Scene } from "phaser";
 import { io } from "socket.io-client";
+import Peer from "peerjs";
 
 
 let player;
@@ -9,14 +10,22 @@ let socket;
 const otherPlayers = {}
 const PROXIMITY_THRESHOLD = 100; // Distance in pixels to trigger connection
 const peerConnections = {}
-
+let localstream;
+let myPeerJsID;
 export class RPGGame extends Scene {
     constructor() {
         super("RPGGame");
+        this.tryingConnection = false; // Indicates if a connection attempt is ongoing
+
+        // this.connectionPairs = new Map(); // Map to store who is connected to whom  
     }
 
     create() {
 
+        this.connection = false
+        this.createVideoContainer();
+
+        
         for (let id in otherPlayers) {
             if (otherPlayers[id].label) {
                 otherPlayers[id].label.destroy();
@@ -24,51 +33,23 @@ export class RPGGame extends Scene {
             otherPlayers[id].destroy();
             delete otherPlayers[id];
         }
-
-        socket = io("http://localhost:3000", {
-            query: { username: this.game.username },
-            reconnection: true,
-            reconnectionDelay: 1000,
-        });
-
-        //webrtc
-        socket.on("webrtc-offer",async(data)=>{
-            if(!peerConnections[data.from]){
-                await this.createPeerConnection(data.from)
-            }
-            const pc = peerConnections[data.from]
-            await pc.setRemoteDescription(new RTCSessionDescription(data.offer))
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer)
-            console.log("answer")
-            socket.emit("webrtc-answer",{
-                answer:answer,
-                to:data.from
-            })
-            
+        this.peer  = new Peer({
+            host:'localhost',
+            port:9000,
+            path:"/peerjs"
         })
 
-        socket.on("webrtc-answer",async(data)=>{
-            const pc = peerConnections[data.from]
-            console.log(pc)
-            if(pc){
-                try {
-                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer))
-                } catch (error) {
-                    console.log(error)
-                }
-            }
-        })
-
-        socket.on("webrtc-ice-candidate",async(data)=>{
-            const pc = peerConnections[data.from]
-            if(pc){
-                await pc.addIceCandidate(new RTCIceCandidate(data.candidate))
-            }
-        })
+        this.peer.on('open', id => {
+            myPeerJsID = id
+            console.log(myPeerJsID)
+            socket = io("http://localhost:3000", {
+                query: { username: this.game.username, peerJSId:myPeerJsID },
+                reconnection: true,
+                reconnectionDelay: 1000,
+            });
 
 
-
+                            //webrtc
 
         socket.on("playerConnected", (data) => {
             console.log("Connected players:", data.players);
@@ -100,8 +81,21 @@ export class RPGGame extends Scene {
                 }
             }
         });
+        socket.on("callEnded", (peerId) => {
+            if (this.call) {
+                this.handleCallEnd(peerId);
+            }
+        });
+
 
         socket.on("playerDisconnected", (id) => {
+            if(this.call){
+                this.call.close()
+                this.call = null
+                this.connection = false
+                document.getElementById("connectionDiv").style.opacity = 0;
+
+            }
             if (otherPlayers[id]) {
                 if (otherPlayers[id].label) {
                     otherPlayers[id].label.destroy();
@@ -114,6 +108,43 @@ export class RPGGame extends Scene {
                 delete peerConnections[id];
             }
         });
+    
+        });
+
+
+        
+
+        this.peer.on('call', (call) => {
+            console.log("receiving call")
+            const {socketId} = call.metadata
+            this.call = call    
+            call.answer(this.localStream);
+            this.tryingConnection = false
+            this.connection = true
+            this.createConnectionDiv(otherPlayers[socketId].username)
+            call.on('stream', remoteStream => {
+                this.addVideoStream(remoteStream, socketId);
+            });
+            call.on('close',()=>{
+                this.handleCallEnd(socketId)
+            })
+        });
+
+        navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true
+        }).then(stream => {
+            this.localStream = stream;
+            const localVideo = document.getElementById('localVideo');
+            if (localVideo) {
+                localVideo.srcObject = stream;
+                localVideo.play().catch(e => console.error(e));
+            }
+            // console.log(this.localStream)
+        }).catch(error => {
+            console.error('Error accessing media devices.', error);
+        });
+
 
         const map = this.make.tilemap({ key: "map" });
 
@@ -122,7 +153,7 @@ export class RPGGame extends Scene {
         const worldLayer = map.createLayer("World", tileset, 0, 0);
         const aboveLayer = map.createLayer("Above Player", tileset, 0, 0);
 
-        player = this.physics.add.sprite(400, 350, "normal").setScale(1.5);
+        player = this.physics.add.sprite(400, 1050, "normal").setScale(1.5);
         this.label_score = this.add.text(player.x, player.y - 20, `${this.game.username}`, {
             font: "14px Arial",
             fill: "#ffffff",
@@ -164,11 +195,79 @@ export class RPGGame extends Scene {
 
         // Create the cursors object to listen for arrow key inputs
         cursors = this.input.keyboard.createCursorKeys();
+        this.myCam = this.cameras.main
+        this.myCam.setBounds(0,0,this.game.config.width,1280)
+        this.myCam.startFollow(player)
+        this.physics.world.bounds.height = 1280;
+
         this.physics.add.collider(player, worldLayer);
         player.setCollideWorldBounds(true)
-
+        
 
     }
+    isMuted = false;
+
+    createVideoContainer() {
+        const videoContainer = document.createElement('div');
+        videoContainer.id = "videoContainer";
+        videoContainer.style.position = "fixed";
+        videoContainer.style.top = "20px";
+        videoContainer.style.left = "50%";
+        videoContainer.style.transform = "translateX(-50%)";
+        videoContainer.style.display = "flex";
+        videoContainer.style.gap = "20px";
+        videoContainer.style.zIndex = "1000";
+        document.body.appendChild(videoContainer);
+
+        // Create local video container
+        const localVideoWrapper = document.createElement('div');
+        localVideoWrapper.style.position = "relative";
+        
+        const localVideo = document.createElement('video');
+        localVideo.id = "localVideo";
+        localVideo.muted = true;
+        localVideo.style.width = "240px";
+        localVideo.style.height = "180px";
+        localVideo.style.borderRadius = "10px";
+        localVideo.style.backgroundColor = "#1a1a1a";
+        localVideo.style.objectFit = "cover";
+        
+        const localLabel = document.createElement('div');
+        localLabel.textContent = "You";
+        localLabel.style.position = "absolute";
+        localLabel.style.bottom = "10px";
+        localLabel.style.left = "10px";
+        localLabel.style.color = "white";
+        localLabel.style.backgroundColor = "rgba(0,0,0,0.5)";
+        localLabel.style.padding = "5px 10px";
+        localLabel.style.borderRadius = "5px";
+        localLabel.style.fontSize = "14px";
+
+        localVideoWrapper.appendChild(localVideo);
+        localVideoWrapper.appendChild(localLabel);
+        videoContainer.appendChild(localVideoWrapper);
+    }
+    toggleAudio() {
+        if (!this.localStream) {
+            console.error("Local stream not initialized");
+            return;
+        }
+        
+        const audioTracks = this.localStream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            console.error("No audio tracks available");
+            return;
+        }
+    
+        // Toggle the `enabled` property of each audio track
+        this.isMuted = !this.isMuted;
+        audioTracks.forEach(track => {
+            track.enabled = !this.isMuted;
+        });
+        document.getElementById("micIcon").src = this.isMuted?"/assets/mute.png":"/assets/unmute.png"
+        console.log(this.isMuted ? "Audio muted" : "Audio unmuted");
+    }
+    
     createConnectionDiv(username)
     {
     if(!document.getElementById("connectionDiv")){
@@ -201,7 +300,7 @@ export class RPGGame extends Scene {
     spriteDiv.style.paddingBottom = "12px"
     // spriteDiv.style.marginRight = "15px"
     const img = document.createElement('img')
-    img.src = "../../../public/assets/tiled/misa-front.png"
+    img.src = "/assets/tiled/misa-front.png"
     img.style.width = "20px"
     spriteDiv.appendChild(img)
     leftDiv.appendChild(spriteDiv)
@@ -243,20 +342,29 @@ export class RPGGame extends Scene {
     const mic = document.createElement('button')
     mic.style.backgroundColor = "transparent"
     mic.style.border = "none"
-    mic.style.fontSize = "17px"
-    mic.innerHTML = "🎙️"
+    mic.style.display = "flex"
+    mic.style.alignItems = "center"
+    mic.style.justifyContent = "center"
+    const micIcon = document.createElement('img');
+    micIcon.id = 'micIcon';
+    micIcon.src = "/assets/unmute.png";  // Default image when mic is unmuted
+    micIcon.style.width = "24px";  // Adjust width as needed
+    micIcon.style.height = "24px"; // Adjust height as needed
+    mic.appendChild(micIcon);
+
+    // mic.innerHTML = this.isMuted?"🎙️":""
     mic.onclick = () => this.toggleAudio();  // Only called when button is clicked
 
     const speaker = document.createElement('button')
     speaker.style.backgroundColor = "transparent"
     speaker.style.border = "none"
-    speaker.style.fontSize = "17px"
+    speaker.style.fontSize = "20px"
     speaker.innerHTML = "🔊"
     speaker.on = ()=>this.toggleAudioOutput()
     const text = document.createElement('button')
     text.style.backgroundColor = "transparent"
     text.style.border = "none"
-    text.style.fontSize = "17px"
+    text.style.fontSize = "20px"
 
     text.innerHTML = "💬"
 
@@ -274,170 +382,136 @@ export class RPGGame extends Scene {
     }
 
 
-    async createPeerConnection(peerId) {
-        console.log("Called")
-        const pc = new RTCPeerConnection({
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' }
-            ]
+
+    addVideoStream(stream, peerId) {
+        const videoContainer = document.getElementById('videoContainer');
+        console.log("stream",stream)
+        // Remove existing video if any
+        const existingVideo = document.getElementById(`video-${peerId}`);
+        if (existingVideo) {
+            existingVideo.parentElement.remove();
+        }
+
+        const videoWrapper = document.createElement('div');
+        videoWrapper.style.position = "relative";
+        
+        const video = document.createElement('video');
+        video.id = `video-${peerId}`;
+        video.srcObject = stream;
+        video.autoplay = true
+        video.muted = true
+        video.style.width = "240px";
+        video.style.height = "180px";
+        video.style.borderRadius = "10px";
+        video.style.backgroundColor = "#1a1a1a";
+        video.style.objectFit = "cover";
+
+        const peerLabel = document.createElement('div');
+        peerLabel.textContent = otherPlayers[peerId]?.username || "Peer";
+        peerLabel.style.position = "absolute";
+        peerLabel.style.bottom = "10px";
+        peerLabel.style.left = "10px";
+        peerLabel.style.color = "white";
+        peerLabel.style.backgroundColor = "rgba(0,0,0,0.5)";
+        peerLabel.style.padding = "5px 10px";
+        peerLabel.style.borderRadius = "5px";
+        peerLabel.style.fontSize = "14px";
+
+        videoWrapper.appendChild(video);
+        videoWrapper.appendChild(peerLabel);
+        videoContainer.appendChild(videoWrapper);
+        video.addEventListener('loadedmetadata', () => {
+            video.play().catch(e => console.error("Play error:", e));
         });
-    
-        // Debug connection state
-        pc.onconnectionstatechange = () => {
-            console.log(`Connection state change: ${pc.connectionState}`);
-        };
-    
-        pc.oniceconnectionstatechange = () => {
-            console.log(`ICE connection state: ${pc.iceConnectionState}`);
-        };
-    
-        pc.onsignalingstatechange = () => {
-            console.log(`Signaling state: ${pc.signalingState}`);
-        };
-    
-        // Initialize audio state
-        this.isAudioEnabled = false;
-        this.localStream = null;
-        this.audioTrack = null;
-    
-        // Debug track events
-        pc.addEventListener('track',(ev)=>{
-            console.log(`Track event: ${ev.track.kind} ${ev.track.id}`)
-        })
-        pc.ontrack = (event) => {
-            console.log("Track received:", event);
-            console.log("Track type:", event.track.kind);
-            console.log("Streams:", event.streams);
-            
-            let remoteAudio
+        // video.play().catch(e => console.error(e));
+    }
 
-            if(!document.getElementById(`remote-audio-${peerId}`)){
-                remoteAudio = document.createElement('audio');
-                remoteAudio.srcObject = event.streams[0];
-                remoteAudio.id = `remote-audio-${peerId}`;
-                remoteAudio.autoplay = true;
-                document.body.appendChild(remoteAudio);
+    async createPeerJsConnection(peerId) {
+        // Check if the peer ID and local stream are defined
+        if (!otherPlayers[peerId] || !otherPlayers[peerId].peerJSId) {
+            console.error(`Peer ID ${peerId} not found or has no peerJSId`);
+            return;
+        }
 
-            }
-            else{
-                remoteAudio = document.getElementById(`remote-audio-${peerId}`)
-                remoteAudio.srcObject = event.streams[0];
-                remoteAudio.id = `remote-audio-${peerId}`;
-                remoteAudio.autoplay = true;
-            }
+        // console.log("inpeerjs",this.localStream)
+        if (!this.localStream) {
+            this.initializeLocalStream()
+            console.error("Local stream is not initialized");
+            return;
+        }
 
-    
-            // Debug audio element
-            remoteAudio.onloadedmetadata = () => {
-                console.log("Audio element metadata loaded");
-            };
-    
-            remoteAudio.onplay = () => {
-                console.log("Audio started playing");
-            };
-    
-            event.track.onmute = () => console.log("Track muted");
-            event.track.onunmute = () => console.log("Track unmuted");
-            event.track.onended = () => console.log("Track ended");
-        };
         try {
-            this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            console.log("Microphone access granted");
-            
-            this.audioTrack = this.localStream.getAudioTracks()[0];
-            this.audioTrack.enabled = true;
-            this.isAudioEnabled = true;
-            
-            this.localStream.getTracks().forEach(track => {
-                pc.addTrack(track, this.localStream);
+            // Attempt to create a call to the other peer
+            console.log(otherPlayers[peerId].peerJSId,"peerjsid")
+            this.tryingConnection = true; // Set tryingConnection to true before attempting to call
+            this.call = await this.peer.call(otherPlayers[peerId].peerJSId, this.localStream,{
+                metadata:{
+                    socketId: socket.id
+                }
             });
-        } catch (err) {
-            console.error("Error accessing microphone:", err);
-        }
 
-        // Modified toggleAudio function with better debugging
-        
-        // this.toggleAudio = async () => {
-        //     try {
-        //         if (!this.localStream) {
-        //             console.log("Requesting microphone access...");
-        //             this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        //             console.log("Microphone access granted");
-                    
-        //             this.audioTrack = this.localStream.getAudioTracks()[0];
-        //             this.audioTrack.enabled = true;
-        //             this.isAudioEnabled = true;
-                    
-        //             this.localStream.getTracks().forEach(track => {
-        //                 pc.addTrack(track, this.localStream);
-        //             });
-        //             // console.log("Adding track to peer connection",this.audioTrack);
-        //             // this.audioTrack.forEach((track)=>{
-        //             //     pc.addTrack(track,this.localStream)
-        //             // })
-        //             // pc.addTrack(this.audioTrack, this.localStream);
-        //             // console.log("Track added:", sender);
-    
-        //             // Monitor track states
-        //             this.audioTrack.onmute = () => console.log("Local track muted");
-        //             this.audioTrack.onunmute = () => console.log("Local track unmuted");
-        //             this.audioTrack.onended = () => console.log("Local track ended");
-        //         } else {
-        //             console.log("Toggling existing audio track");
-        //             this.isAudioEnabled = !this.isAudioEnabled;
-        //             this.audioTrack.enabled = this.isAudioEnabled;
-        //             console.log("Audio enabled:", this.isAudioEnabled);
-        //         }
-    
-        //         // Update mic button
-        //         // const micButton = document.querySelector(`button:contains('🎙️')`);
-        //         // if (micButton) {
-        //         //     micButton.innerHTML = this.isAudioEnabled ? '🎙️' : '🎙️ (off)';
-        //         // }
-        //     } catch (error) {
-        //         console.error("Error in toggleAudio:", error);
-        //     }
-        // };
-
-        
-    
-        // Debug data channel
-        const dataChannel = pc.createDataChannel("gameData");
-        dataChannel.onopen = () => console.log("Data channel opened");
-        dataChannel.onclose = () => console.log("Data channel closed");
-        dataChannel.onerror = (error) => console.log("Data channel error:", error);
-        dataChannel.onmessage = (event) => {
-            console.log("Data channel message:", event.data);
-        };
-    
-        pc.onicecandidate = (event) => {
-            if (event.candidate) {
-                console.log("Sending ICE candidate");
-                socket.emit("webrtc-ice-candidate", {
-                    candidate: event.candidate,
-                    to: peerId
-                });
+            // Ensure the call object is valid before accessing `on`
+            if (!this.call) {
+                console.error("Failed to establish call.");
+                return;
             }
-        };
-    
-        this.createConnectionDiv(otherPlayers[peerId].username);
-    
-        peerConnections[peerId] = pc;
-        return pc;
-    }
+            this.connection = true
+            this.tryingConnection = false
 
-
-    async initializeWebRTCconnection(peerId) {
-        if (!peerConnections[peerId]) {
-            const pc = await this.createPeerConnection(peerId);
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socket.emit("webrtc-offer", {
-                offer: offer,
-                to: peerId
+            // socket.emit("onCall",{
+            //     to: peerId,
+            //     from:socket
+            // })
+            // Listen for the remote stream from the other peer
+            this.call.on('stream', remoteStream => {
+                this.addVideoStream(remoteStream,peerId);
             });
+            // this.call.on('close',()=>{
+            //     this.handleCallEnd();
+
+            // })
+            this.createConnectionDiv(otherPlayers[peerId].username)
+
+        } catch (error) {
+            console.error("Error establishing peer connection:", error);
+            this.tryingConnection = false; // Reset if there’s an error
+
         }
     }
+
+
+    handleCallEnd(peerId) {
+        if (this.localStream) {
+            const remoteVideo = document.getElementById(`video-${peerId}`);
+            if (remoteVideo) {
+                remoteVideo.parentElement.remove();
+            }
+        }
+        if (this.call) {
+            this.call.removeAllListeners()
+            this.call.close();
+            this.call = null;
+            this.connection = false;
+            this.tryingConnection = false
+            const connectionDiv = document.getElementById("connectionDiv");
+            if (connectionDiv) {
+                connectionDiv.style.opacity = 0;
+            }
+        }
+        this.initializeLocalStream();
+
+    }
+    initializeLocalStream() {
+        navigator.mediaDevices.getUserMedia({
+            video: false,
+            audio: true
+        }).then(stream => {
+            this.localStream = stream;
+            console.log("Local stream reinitialized");
+        }).catch(error => {
+            console.error('Error reinitializing media devices.', error);
+        });
+    }   
 
 
     checkProximity()
@@ -449,21 +523,32 @@ export class RPGGame extends Scene {
                 player.x, player.y,otherPlayer.x,otherPlayer.y
             )
 
-            if(distance <= PROXIMITY_THRESHOLD && !peerConnections[id]){
-                this.initializeWebRTCconnection(id)
+            if(distance <= PROXIMITY_THRESHOLD  && !this.connection && !this.tryingConnection){
+                console.log("close")
+                // this.tryingConnection = true
+                this.createPeerJsConnection(id)
             }
-            else if(distance>PROXIMITY_THRESHOLD && peerConnections[id]){
-                document.getElementById("connectionDiv").style.opacity = 0
-                peerConnections[id].close();
-                delete peerConnections[id];
-                console.log(peerConnections[id])
-                const remoteAudio = document.querySelector(`remote-audio-${id}`);
-                if (remoteAudio) {
-                    remoteAudio.remove();
-                }
+            else if(distance>PROXIMITY_THRESHOLD && this.connection){
+                this.endCall(id);
+
+                // const remoteAudio = document.querySelector(`remote-audio-${id}`);
+                // if (remoteAudio) {
+                //     remoteAudio.remove();
+                // }
             }
         }
     }
+    endCall(peerId) {
+        console.log("ending call");
+        // Notify the other peer that the call is ending
+        socket.emit("endCall", peerId);
+        this.handleCallEnd(peerId);
+        
+        if (peerConnections[peerId]) {
+            delete peerConnections[peerId];
+        }
+    }
+
 
     update(time, delta) {
         player.body.setVelocity(0);
@@ -532,6 +617,7 @@ export class RPGGame extends Scene {
             }).setOrigin(0.5, 1);
             
             otherPlayers[id].label = label;
+            otherPlayers[id].peerJSId = data.peerJSId
             otherPlayers[id].username = data.username;
         }
     }
