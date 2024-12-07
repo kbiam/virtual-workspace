@@ -35,7 +35,8 @@ export class RPGGame extends Scene {
         this.peer  = new Peer({
             host:'peerjs-server-2d-game-phasesj.onrender.com',
             port:10000,
-            path:""
+            path:"/peerjs",
+            secure:true
         })
 
         console.log(this.peer,"peer")
