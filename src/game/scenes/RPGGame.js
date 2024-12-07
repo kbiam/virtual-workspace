@@ -38,10 +38,12 @@ export class RPGGame extends Scene {
             path:""
         })
 
-        this.peer.on('open', id => {
+        console.log(this.peer,"peer")
+        this.peer.on('open',async id => {
+            console.log("peerjs connection made")
             myPeerJsID = id
             console.log(myPeerJsID)
-            socket = io("https://backend-2d-game-phaserjs.onrender.com", {
+            socket = await io("https://backend-2d-game-phaserjs.onrender.com", {
                 query: { username: this.game.username, peerJSId:myPeerJsID },
                 reconnection: true,
                 reconnectionDelay: 1000,
