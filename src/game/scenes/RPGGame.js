@@ -23,8 +23,7 @@ export class RPGGame extends Scene {
     create() {
 
         this.connection = false
-        this.createVideoContainer();
-
+        
         
         for (let id in otherPlayers) {
             if (otherPlayers[id].label) {
@@ -34,15 +33,15 @@ export class RPGGame extends Scene {
             delete otherPlayers[id];
         }
         this.peer  = new Peer({
-            host:'localhost',
-            port:9000,
+            host:'https://peerjs-server-2d-game-phasesj.onrender.com',
+            port:10000,
             path:"/peerjs"
         })
 
         this.peer.on('open', id => {
             myPeerJsID = id
             console.log(myPeerJsID)
-            socket = io("http://localhost:3000", {
+            socket = io("https://backend-2d-game-phaserjs.onrender.com", {
                 query: { username: this.game.username, peerJSId:myPeerJsID },
                 reconnection: true,
                 reconnectionDelay: 1000,
@@ -83,7 +82,7 @@ export class RPGGame extends Scene {
         });
         socket.on("callEnded", (peerId) => {
             if (this.call) {
-                this.handleCallEnd(peerId);
+                this.handleCallEnd();
             }
         });
 
@@ -123,24 +122,19 @@ export class RPGGame extends Scene {
             this.connection = true
             this.createConnectionDiv(otherPlayers[socketId].username)
             call.on('stream', remoteStream => {
-                this.addVideoStream(remoteStream, socketId);
+                this.addVideoStream(remoteStream);
             });
             call.on('close',()=>{
-                this.handleCallEnd(socketId)
+                this.handleCallEnd()
             })
         });
 
         navigator.mediaDevices.getUserMedia({
-            video: true,
+            video: false,
             audio: true
         }).then(stream => {
             this.localStream = stream;
-            const localVideo = document.getElementById('localVideo');
-            if (localVideo) {
-                localVideo.srcObject = stream;
-                localVideo.play().catch(e => console.error(e));
-            }
-            // console.log(this.localStream)
+            console.log(this.localStream)
         }).catch(error => {
             console.error('Error accessing media devices.', error);
         });
@@ -207,46 +201,6 @@ export class RPGGame extends Scene {
     }
     isMuted = false;
 
-    createVideoContainer() {
-        const videoContainer = document.createElement('div');
-        videoContainer.id = "videoContainer";
-        videoContainer.style.position = "fixed";
-        videoContainer.style.top = "20px";
-        videoContainer.style.left = "50%";
-        videoContainer.style.transform = "translateX(-50%)";
-        videoContainer.style.display = "flex";
-        videoContainer.style.gap = "20px";
-        videoContainer.style.zIndex = "1000";
-        document.body.appendChild(videoContainer);
-
-        // Create local video container
-        const localVideoWrapper = document.createElement('div');
-        localVideoWrapper.style.position = "relative";
-        
-        const localVideo = document.createElement('video');
-        localVideo.id = "localVideo";
-        localVideo.muted = true;
-        localVideo.style.width = "240px";
-        localVideo.style.height = "180px";
-        localVideo.style.borderRadius = "10px";
-        localVideo.style.backgroundColor = "#1a1a1a";
-        localVideo.style.objectFit = "cover";
-        
-        const localLabel = document.createElement('div');
-        localLabel.textContent = "You";
-        localLabel.style.position = "absolute";
-        localLabel.style.bottom = "10px";
-        localLabel.style.left = "10px";
-        localLabel.style.color = "white";
-        localLabel.style.backgroundColor = "rgba(0,0,0,0.5)";
-        localLabel.style.padding = "5px 10px";
-        localLabel.style.borderRadius = "5px";
-        localLabel.style.fontSize = "14px";
-
-        localVideoWrapper.appendChild(localVideo);
-        localVideoWrapper.appendChild(localLabel);
-        videoContainer.appendChild(localVideoWrapper);
-    }
     toggleAudio() {
         if (!this.localStream) {
             console.error("Local stream not initialized");
@@ -383,47 +337,13 @@ export class RPGGame extends Scene {
 
 
 
-    addVideoStream(stream, peerId) {
-        const videoContainer = document.getElementById('videoContainer');
-        console.log("stream",stream)
-        // Remove existing video if any
-        const existingVideo = document.getElementById(`video-${peerId}`);
-        if (existingVideo) {
-            existingVideo.parentElement.remove();
-        }
-
-        const videoWrapper = document.createElement('div');
-        videoWrapper.style.position = "relative";
-        
-        const video = document.createElement('video');
-        video.id = `video-${peerId}`;
-        video.srcObject = stream;
-        video.autoplay = true
-        video.muted = true
-        video.style.width = "240px";
-        video.style.height = "180px";
-        video.style.borderRadius = "10px";
-        video.style.backgroundColor = "#1a1a1a";
-        video.style.objectFit = "cover";
-
-        const peerLabel = document.createElement('div');
-        peerLabel.textContent = otherPlayers[peerId]?.username || "Peer";
-        peerLabel.style.position = "absolute";
-        peerLabel.style.bottom = "10px";
-        peerLabel.style.left = "10px";
-        peerLabel.style.color = "white";
-        peerLabel.style.backgroundColor = "rgba(0,0,0,0.5)";
-        peerLabel.style.padding = "5px 10px";
-        peerLabel.style.borderRadius = "5px";
-        peerLabel.style.fontSize = "14px";
-
-        videoWrapper.appendChild(video);
-        videoWrapper.appendChild(peerLabel);
-        videoContainer.appendChild(videoWrapper);
-        video.addEventListener('loadedmetadata', () => {
-            video.play().catch(e => console.error("Play error:", e));
+    addVideoStream(stream) {
+        const audio = document.createElement('audio');
+        audio.srcObject = stream;
+        audio.addEventListener('loadedmetadata', () => {
+            audio.play();
         });
-        // video.play().catch(e => console.error(e));
+        document.body.append(audio);
     }
 
     async createPeerJsConnection(peerId) {
@@ -464,7 +384,7 @@ export class RPGGame extends Scene {
             // })
             // Listen for the remote stream from the other peer
             this.call.on('stream', remoteStream => {
-                this.addVideoStream(remoteStream,peerId);
+                this.addVideoStream(remoteStream);
             });
             // this.call.on('close',()=>{
             //     this.handleCallEnd();
@@ -480,12 +400,11 @@ export class RPGGame extends Scene {
     }
 
 
-    handleCallEnd(peerId) {
+    handleCallEnd() {
         if (this.localStream) {
-            const remoteVideo = document.getElementById(`video-${peerId}`);
-            if (remoteVideo) {
-                remoteVideo.parentElement.remove();
-            }
+            this.localStream.getTracks().forEach(track => {
+                track.stop();
+            });
         }
         if (this.call) {
             this.call.removeAllListeners()
@@ -542,7 +461,7 @@ export class RPGGame extends Scene {
         console.log("ending call");
         // Notify the other peer that the call is ending
         socket.emit("endCall", peerId);
-        this.handleCallEnd(peerId);
+        this.handleCallEnd();
         
         if (peerConnections[peerId]) {
             delete peerConnections[peerId];
