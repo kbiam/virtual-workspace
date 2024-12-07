@@ -33,9 +33,9 @@ export class RPGGame extends Scene {
             delete otherPlayers[id];
         }
         this.peer  = new Peer({
-            host:'https://peerjs-server-2d-game-phasesj.onrender.com',
+            host:'peerjs-server-2d-game-phasesj.onrender.com',
             port:10000,
-            path:"/peerjs"
+            path:""
         })
 
         this.peer.on('open', id => {
