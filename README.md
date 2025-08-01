@@ -28,8 +28,7 @@ A real-time virtual meeting space where users can move around, interact, and com
 
 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/virtual-space.git
-cd virtual-space
+git clone https://github.com/kbiam/virtual-workspace.git
 ```
 
 2. Install dependencies
