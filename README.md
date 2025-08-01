@@ -2,7 +2,7 @@
 
 A real-time virtual meeting space where users can move around, interact, and communicate through proximity-based voice chat and messaging.
 
-![Virtual Space Demo](./Screenshot 2024-12-15 161152.png)
+![Virtual Space Demo](./image.png)
 
 ## Features
 
